@@ -1,0 +1,11 @@
+**
+!requirements.txt
+!services/
+!services/**
+!src/
+!src/*/
+!src/*/*.py
+src/voice/
+**/__pycache__/
+**/.env*
+**/*.docx

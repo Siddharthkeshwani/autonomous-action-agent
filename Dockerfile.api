@@ -1,0 +1,16 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 PYTHON_DOTENV_DISABLED=1 \
+    EMBED_BUSINESS_API=1 SANDBOX_BACKEND=e2b PORT=10000
+
+COPY requirements.txt .
+RUN sed -E '/^(Faker|docker|livekit|livekit-agents|livekit-plugins-deepgram|livekit-plugins-silero|pytest)==/d' \
+    requirements.txt > /tmp/requirements-api.txt \
+    && pip install --no-cache-dir -r /tmp/requirements-api.txt \
+    && rm /tmp/requirements-api.txt
+
+COPY services/ services/
+COPY src/ src/
+USER 65534:65534
+CMD ["sh", "-c", "export BUSINESS_API_URL=\"${BUSINESS_API_URL:-http://127.0.0.1:$PORT/business}\"; exec uvicorn src.api.main:app --host 0.0.0.0 --port \"$PORT\" --workers 1"]

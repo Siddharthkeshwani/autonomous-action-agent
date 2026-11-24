@@ -131,6 +131,10 @@ def create_app(graph_context=open_graph):
             yield
 
     app = FastAPI(title="OmniOps Agent", lifespan=lifespan)
+    if os.getenv("EMBED_BUSINESS_API") == "1":
+        from services.business_api.main import app as business_app
+
+        app.mount("/business", business_app)
     origins = ["http://localhost:3000"]
     if frontend := os.getenv("FRONTEND_URL", "").strip().rstrip("/"):
         origins.append(frontend)
