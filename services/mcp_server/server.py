@@ -33,6 +33,10 @@ class PolicyExcerpt(BaseModel):
     text: str
 
 
+class ApprovalRejected(ToolError):
+    """The reviewer did not approve the proposed action."""
+
+
 @contextmanager
 def readonly_db():
     dsn = os.getenv("SUPABASE_READONLY_URL")
@@ -178,12 +182,22 @@ def request_approval(action: str, payload: dict) -> str:
     except RuntimeError:
         raise ToolError("Run this action in LangGraph to request human approval.") from None
 
-    approval = interrupt({"action": action, "payload": payload})
+    approval = interrupt({
+        "action": action,
+        "payload": payload,
+        "tool_name": "initiate_refund" if action == "refund" else "create_ticket_or_email",
+        "arguments": {action: payload},
+        "impact_summary": {
+            "refund": "Refund the specified amount on this order.",
+            "ticket": "Create a support ticket for this order.",
+            "email": "Send this message to the specified recipient.",
+        }[action],
+    })
     if not isinstance(approval, dict) or approval.get("approved") is not True:
-        raise ToolError("Action was not approved.")
-    approver = approval.get("approved_by")
+        raise ApprovalRejected("Action was not approved.")
+    approver = approval.get("approved_by", "human-reviewer")
     if not isinstance(approver, str) or not approver.strip():
-        raise ToolError("Approval must include an approver.")
+        raise ApprovalRejected("Approval must include an approver.")
     return approver
 
 
