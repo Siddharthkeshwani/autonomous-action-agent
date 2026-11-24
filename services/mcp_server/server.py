@@ -1,12 +1,16 @@
 import os
 from contextlib import contextmanager
+from dataclasses import asdict
 from typing import Literal
+from uuid import uuid4
 
 import httpx
 import psycopg
 from dotenv import load_dotenv
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
+from fastmcp.server.dependencies import get_context
+from langchain_core.messages import ToolMessage
 from langgraph.config import get_config
 from langgraph.types import interrupt
 from mcp.types import ToolAnnotations
@@ -15,6 +19,7 @@ from psycopg.sql import SQL, Identifier
 from pydantic import BaseModel
 
 from services.business_api.models import EmailDetails, NonBlank, RecordId, RefundDetails, TicketDetails
+from src.sandbox.base import InputData, SandboxError, SandboxRunner
 
 from .sql_guard import validate_sql
 
@@ -131,9 +136,40 @@ async def get_transaction_or_order(kind: Literal["transaction", "order"], id: Re
     return await business_request("GET", f"{path}/{id}")
 
 
-def execute_python_sandbox(code: NonBlank) -> dict:
-    """Run Python in the configured sandbox and return output and charts."""
-    raise ToolError("Python sandbox is not configured.")
+def execute_python_sandbox(
+    code: NonBlank, input_data: InputData = None, tool_call_id: str | None = None,
+) -> dict:
+    """Run sandboxed Python with input_data.json and collect /tmp/chart_*.png."""
+    backend = os.getenv("SANDBOX_BACKEND", "docker")
+    runner: SandboxRunner
+    if backend == "docker":
+        from src.sandbox.docker_runner import DockerRunner
+
+        runner = DockerRunner()
+    elif backend == "e2b":
+        from src.sandbox.e2b_runner import E2BRunner
+
+        runner = E2BRunner()
+    else:
+        raise ToolError("SANDBOX_BACKEND must be docker or e2b.")
+
+    try:
+        result = runner.run(code, input_data)
+    except SandboxError as error:
+        raise ToolError(str(error)) from None
+
+    output = asdict(result)
+    if result.exit_code:
+        if tool_call_id is None:
+            try:
+                tool_call_id = get_context().request_id
+            except RuntimeError:
+                tool_call_id = str(uuid4())
+        output["tool_message"] = ToolMessage(
+            content=result.stderr or f"Python exited with status {result.exit_code}.",
+            name="execute_python_sandbox", tool_call_id=tool_call_id, status="error",
+        ).model_dump(include={"type", "content", "name", "tool_call_id", "status"})
+    return output
 
 
 def request_approval(action: str, payload: dict) -> str:
