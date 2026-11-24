@@ -45,9 +45,10 @@ def approval_details(config, interrupt):
                     **interrupt.value).model_dump()
 
 
-async def agent_events(graph, graph_input, config, telemetry, *, pending=None, chart_count=0):
+async def agent_events(graph, graph_input, config, telemetry=None, *, pending=None, chart_count=0, run=None):
     started = perf_counter()
-    run = RunTelemetry(operation="confirm" if pending else "chat")
+    if run is None:
+        run = RunTelemetry(operation="confirm" if pending else "chat")
     model_started = answer = approval = None
     try:
         updates = graph.astream(graph_input, config, stream_mode=["custom", "messages", "updates"],
@@ -115,4 +116,5 @@ async def agent_events(graph, graph_input, config, telemetry, *, pending=None, c
         yield "error", {"message": "The agent could not finish this request."}
     finally:
         run.duration_ms = round((perf_counter() - started) * 1000, 1)
-        telemetry.record(run)
+        if telemetry is not None:
+            telemetry.record(run)

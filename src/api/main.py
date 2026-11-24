@@ -20,10 +20,11 @@ from services.mcp_server.server import edit_action, mcp
 from src.agent.graph import open_graph
 
 from .schemas import (
-    Approval, ChatRequest, ConfirmRequest, ConfirmResponse, HealthResponse, VoiceTokenRequest, VoiceTokenResponse,
+    VOICE_AGENT_NAME, Approval, ChatRequest, ConfirmRequest, ConfirmResponse, HealthResponse, VoiceTokenRequest,
+    VoiceTokenResponse,
 )
 from .stream import SSE, agent_events, stream_response
-from .telemetry import Latency, MetricsResponse, Telemetry
+from .telemetry import Latency, MetricsResponse, Telemetry, recent_voice_runs
 
 
 async def check_postgres():
@@ -187,17 +188,18 @@ def create_app(graph_context=open_graph):
             raise HTTPException(503, "LiveKit is not configured.")
         room = body.room_name or f"voice-{uuid4().hex}"
         grants = livekit.VideoGrants(room_join=True, room=room, can_publish_sources=["microphone"])
+        dispatch = livekit.RoomConfiguration(agents=[livekit.RoomAgentDispatch(agent_name=VOICE_AGENT_NAME)])
         token = (livekit.AccessToken(key, secret).with_identity(body.identity)
-                 .with_grants(grants).with_ttl(timedelta(minutes=10)).to_jwt())
+                 .with_grants(grants).with_room_config(dispatch).with_ttl(timedelta(minutes=10)).to_jwt())
         return VoiceTokenResponse(url=url, token=token, room_name=room, identity=body.identity)
 
     @app.get("/api/v1/metrics", response_model=MetricsResponse)
     async def metrics():
-        return app.state.telemetry.metrics()
+        return app.state.telemetry.metrics(await recent_voice_runs())
 
     @app.get("/api/v1/metrics/latency", response_model=dict[str, Latency])
     async def latency():
-        return app.state.telemetry.metrics().latency
+        return app.state.telemetry.metrics(await recent_voice_runs()).latency
 
     return app
 

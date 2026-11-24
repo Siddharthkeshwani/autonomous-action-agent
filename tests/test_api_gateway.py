@@ -29,6 +29,7 @@ METRICS = "/api/v1/metrics"
 @pytest.fixture(autouse=True)
 def disable_tracing(monkeypatch):
     monkeypatch.setenv("LANGSMITH_TRACING", "false")
+    monkeypatch.delenv("UPSTASH_REDIS_URL", raising=False)
 
 
 def app_with_agent(reason):
@@ -240,6 +241,7 @@ def test_voice_token_is_signed_and_scoped_to_requested_room(monkeypatch):
         assert claims.video.room == body["room_name"] == "review-room"
         assert claims.video.room_join is True
         assert not claims.video.room_admin
+        assert claims.room_config.agents[0].agent_name == main.VOICE_AGENT_NAME
         payload = body["token"].split(".")[1]
         raw_claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
         assert 600 <= raw_claims["exp"] - raw_claims["nbf"] <= 601

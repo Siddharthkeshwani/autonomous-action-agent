@@ -23,9 +23,10 @@ def is_injection(text):
 
 
 def build_router():
-    guard = groq_model(PROMPT_GUARD)
-    router = groq_model(os.getenv("ROUTER_MODEL") or ROUTER_MODEL, max_tokens=16)
-    backup = groq_model(BACKUP_MODEL, reasoning_effort="low")
+    # Prompt Guard rejects streaming requests made by LangGraph's message stream.
+    guard = groq_model(PROMPT_GUARD, disable_streaming=True)
+    router = groq_model(os.getenv("ROUTER_MODEL") or ROUTER_MODEL, max_tokens=16, disable_streaming=True)
+    backup = groq_model(BACKUP_MODEL, reasoning_effort="low", disable_streaming=True)
 
     async def route(text):
         messages = [HumanMessage(content=text)]

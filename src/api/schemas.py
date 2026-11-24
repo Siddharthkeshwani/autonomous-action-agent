@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field, StrictBool, StringConstraints
 
 Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=128)]
 Message = Annotated[str, StringConstraints(pattern=r"\S")]
+VOICE_AGENT_NAME = "omniops-voice"
 
 
 class ChatRequest(BaseModel):
