@@ -176,7 +176,21 @@ def execute_python_sandbox(
     return output
 
 
-def request_approval(action: str, payload: dict) -> str:
+def edit_action(action: str, payload: dict, edits: dict) -> dict:
+    """Validate reviewer edits against the existing write request schema."""
+    model = {"refund": RefundDetails, "ticket": TicketDetails, "email": EmailDetails}[action]
+    if action in edits:
+        if set(edits) != {action} or not isinstance(edits[action], dict):
+            raise ValueError("Edit only the pending action.")
+        edits = edits[action]
+    if "approved_by" in edits or edits.keys() - model.model_fields.keys() - payload.keys():
+        raise ValueError("Edit only fields on the pending action.")
+    if edits.get("idempotency_key", payload.get("idempotency_key")) != payload.get("idempotency_key"):
+        raise ValueError("The idempotency key cannot be changed.")
+    return model.model_validate({**payload, **edits}).model_dump(mode="json", exclude={"approved_by"})
+
+
+def approve_payload(action: str, payload: dict) -> dict:
     try:
         get_config()
     except RuntimeError:
@@ -198,14 +212,18 @@ def request_approval(action: str, payload: dict) -> str:
     approver = approval.get("approved_by", "human-reviewer")
     if not isinstance(approver, str) or not approver.strip():
         raise ApprovalRejected("Approval must include an approver.")
-    return approver
+    edits = approval.get("edited_args")
+    if edits is not None:
+        if not isinstance(edits, dict):
+            raise ApprovalRejected("Edited arguments must be an object.")
+        payload = edit_action(action, payload, edits)
+    return {**payload, "approved_by": approver}
 
 
 async def initiate_refund(refund: RefundDetails) -> dict:
     """Request human approval before submitting an order refund."""
     payload = refund.model_dump(mode="json")
-    payload["approved_by"] = request_approval("refund", payload)
-    return await business_request("POST", "orders/refund", payload)
+    return await business_request("POST", "orders/refund", approve_payload("refund", payload))
 
 
 async def create_ticket_or_email(
@@ -219,8 +237,7 @@ async def create_ticket_or_email(
     else:
         action, path, request = "email", "notifications/email", email
     payload = request.model_dump(mode="json", exclude={"approved_by"})
-    payload["approved_by"] = request_approval(action, payload)
-    return await business_request("POST", path, payload)
+    return await business_request("POST", path, approve_payload(action, payload))
 
 
 for tool in (get_db_schema, query_readonly_sql, search_policy_kb,

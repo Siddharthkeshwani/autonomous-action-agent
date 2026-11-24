@@ -10,6 +10,7 @@ from fastmcp.exceptions import ToolError
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
 
@@ -86,6 +87,7 @@ async def build_graph(checkpointer, *, route=None, reason=None):
 
     async def call_model(state: AgentState) -> Command[NextNode]:
         started = perf_counter()
+        get_stream_writer()({"step": "model", "started": started})
         style = VOICE if state.get("channel") == "voice" else CHAT
         prompt = f"{AGENT}\n{style}\nUser intent: {state['intent']}."
         if state["step_events"][-1]["status"] == "retry":
@@ -106,6 +108,7 @@ async def build_graph(checkpointer, *, route=None, reason=None):
         started = perf_counter()
         call, *remaining = state["remaining_calls"]
         name = call["name"]
+        get_stream_writer()({"step": name, "started": started})
         error = None
         charts = state["chart_artifacts"]
         status = "ok"
