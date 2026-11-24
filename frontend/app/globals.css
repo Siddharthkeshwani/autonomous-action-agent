@@ -1,0 +1,65 @@
+/* Hallmark 2.0.0 | shape: app screen | genre: modern-minimal | theme: custom slate */
+/* The chat gets most of the space. Voice, approval, and latency stay in reach. */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+  --paper: #fff;
+  --surface: #f8fafc;
+  --track: #f1f5f9;
+  --line: #e2e8f0;
+  --ink: #0f172a;
+  --muted: #475569;
+  --accent: #1d4ed8;
+  --error: #b91c1c;
+  --ready: #047857;
+}
+
+html,
+body {
+  overflow-x: clip;
+}
+
+body {
+  @apply bg-surface text-ink;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+@layer components {
+  .panel {
+    @apply min-w-0 rounded-lg border border-line bg-paper;
+  }
+
+  .button {
+    @apply min-h-10 rounded-md border border-line bg-paper px-3 py-2 text-sm font-medium hover:bg-surface;
+  }
+
+  .button-primary {
+    @apply border-accent bg-accent text-paper hover:bg-ink;
+  }
+
+  .button:active:not(:disabled) {
+    @apply border-muted;
+  }
+
+  .button:disabled {
+    @apply cursor-not-allowed opacity-50;
+  }
+}
+
+.lk-audio-bar {
+  background: var(--line);
+  min-height: 4px;
+  width: 5px;
+  border-radius: 2px;
+}
+
+.voice-audio-active .lk-audio-bar {
+  background: var(--accent);
+}
