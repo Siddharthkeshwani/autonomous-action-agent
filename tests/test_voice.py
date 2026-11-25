@@ -69,15 +69,18 @@ def test_worker_starts_audio_session_with_silero_and_barge_in(monkeypatch):
         await ctx.add_shutdown_callback.call_args.args[0]()
 
     asyncio.run(run())
-    load_vad.assert_called_once_with(min_silence_duration=0.45)
-    worker.deepgram.STT.assert_called_once_with(model="nova-3", keyterm=["UPI"])
+    load_vad.assert_called_once_with(min_silence_duration=0.95, min_speech_duration=0.15)
+    worker.deepgram.STT.assert_called_once_with(model="nova-3", keyterm=["UPI"], endpointing_ms=900)
     worker.deepgram.TTS.assert_called_once_with(model="aura-2-asteria-en")
     ctx.connect.assert_awaited_once_with(auto_subscribe=worker.AutoSubscribe.AUDIO_ONLY)
     assert factory.call_args.kwargs["vad"] is vad
     options = factory.call_args.kwargs["turn_handling"]
     assert options["turn_detection"] == "vad"
-    assert options["interruption"] == {"enabled": True, "mode": "vad", "min_duration": 0.15}
+    assert options["endpointing"] == {"min_delay": 1.1}
+    assert options["interruption"] == {"enabled": True, "mode": "vad", "min_duration": 0.6}
+    assert options["preemptive_generation"] == {"enabled": False}
     assert session.start.call_args.kwargs["room_options"].participant_identity == "caller"
+    assert session.start.call_args.kwargs["room_options"].text_output is False
     assert {call.args[0] for call in session.on.call_args_list} == {"user_input_transcribed", "speech_created"}
     session.aclose.assert_awaited_once()
 
@@ -88,19 +91,20 @@ def packets(participant):
     return [json.loads(call.args[0]) for call in participant.publish_data.await_args_list]
 
 
-async def voice_turn(agent, text, *, interrupted=False, speech=None):
+async def voice_turn(agent, text, *, interrupted=False, speech=None, final_segment=None):
     user = llm.ChatMessage(role="user", content=[text], metrics={"stopped_speaking_at": 10.0})
-    agent.transcribed(SimpleNamespace(is_final=True, transcript=text, created_at=10.075))
+    agent.transcribed(SimpleNamespace(is_final=True, transcript=final_segment or text, created_at=10.075))
     await agent.on_user_turn_completed(llm.ChatContext(), user)
+    turn_id = agent.turns[user.id].turn_id
     handle = Mock(interrupted=interrupted, chat_items=[speech] if speech else [])
     handle.exception.return_value = None
     agent.speech_created(SimpleNamespace(source="generate_reply", speech_handle=handle))
     context = llm.ChatContext(items=[user])
-    async with agent.llm.chat(chat_ctx=context, conn_options=APIConnectOptions(max_retry=0)) as stream:
+    async with agent.llm.chat(chat_ctx=context, conn_options=APIConnectOptions()) as stream:
         replies = [chunk.delta.content async for chunk in stream]
     handle.add_done_callback.call_args.args[0](handle)
     await agent.drain()
-    return user.id, replies
+    return turn_id, replies
 
 
 def test_voice_turn_sends_transcripts_steps_and_latency(monkeypatch):
@@ -138,7 +142,7 @@ def test_voice_turn_sends_transcripts_steps_and_latency(monkeypatch):
 
     asyncio.run(run())
     events = [(packet["event"], packet["data"]) for packet in packets(participant)]
-    assert events[0] == ("transcript", {"role": "user", "text": TRANSCRIPT, "is_final": True})
+    assert events[1] == ("transcript", {"role": "user", "text": TRANSCRIPT, "is_final": True})
     assert ("step_status", {"step": "model", "status": "running", "message": "Thinking..."}) in events
     assert ("transcript", {"role": "assistant", "text": "Policy: Escalate", "is_final": True, "interrupted": True}) in events
     assert events[-1][0] == "latency"
@@ -152,6 +156,31 @@ def test_voice_turn_sends_transcripts_steps_and_latency(monkeypatch):
     assert run.tool_counts == {"query_readonly_sql": 1}
     assert run.timings_ms["tts_ttfb"] == [115.0]
     assert run.timings_ms["total_e2e"] == [920.0]
+
+
+def test_voice_keeps_stt_segments_in_one_turn(monkeypatch):
+    participant = Mock(publish_data=AsyncMock())
+    answer = AsyncMock(return_value="Check with Payments Ops.")
+    monkeypatch.setattr(worker, "answer_voice", answer)
+    monkeypatch.setattr(worker, "store_voice_run", AsyncMock())
+
+    async def run():
+        agent = worker.VoiceAgent(Mock(), participant, "caller")
+        agent.transcribed(SimpleNamespace(is_final=False, transcript="How long", created_at=8.0))
+        agent.transcribed(SimpleNamespace(is_final=True, transcript="How long does it take", created_at=9.0))
+        await agent.drain()
+        answer.assert_not_awaited()
+        turn_id, replies = await voice_turn(agent, TRANSCRIPT, final_segment="for a failed UPI payment to be reversed?")
+        assert replies == [answer.return_value]
+        answer.assert_awaited_once()
+        assert answer.await_args.args[1] == TRANSCRIPT
+        captions = [packet for packet in packets(participant) if packet["event"] == "transcript"]
+        assert {packet["turn_id"] for packet in captions} == {turn_id}
+        assert [(packet["data"]["text"], packet["data"]["is_final"]) for packet in captions] == [
+            ("How long", False), ("How long does it take", False), (TRANSCRIPT, False), (TRANSCRIPT, True),
+        ]
+
+    asyncio.run(run())
 
 
 def test_voice_requests_approval_without_executing_the_write(monkeypatch):

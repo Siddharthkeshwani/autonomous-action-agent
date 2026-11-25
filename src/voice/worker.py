@@ -4,6 +4,7 @@ import logging
 import re
 import sys
 from contextlib import AsyncExitStack, aclosing
+from dataclasses import replace
 from textwrap import shorten
 from uuid import uuid4
 
@@ -28,7 +29,8 @@ ERROR_REPLY = "I could not finish this request."
 
 
 def speech_models():
-    return deepgram.STT(model="nova-3", keyterm=["UPI"]), deepgram.TTS(model="aura-2-asteria-en")
+    stt = deepgram.STT(model="nova-3", keyterm=["UPI"], endpointing_ms=900)
+    return stt, deepgram.TTS(model="aura-2-asteria-en")
 
 
 def spoken_text(answer):
@@ -95,7 +97,8 @@ class GraphLLM(llm.LLM):
         self.reply = reply
 
     def chat(self, *, chat_ctx, conn_options, tools=None, **kwargs):
-        return GraphStream(self, chat_ctx=chat_ctx, conn_options=conn_options, tools=tools or [])
+        # Retrying a LiveKit stream would submit the same turn to LangGraph again.
+        return GraphStream(self, chat_ctx=chat_ctx, conn_options=replace(conn_options, max_retry=0), tools=tools or [])
 
 
 class GraphStream(llm.LLMStream):
@@ -115,6 +118,9 @@ class VoiceAgent(Agent):
         self.turns = {}
         self.pending_id = None
         self.final_at = None
+        self.caption_run = None
+        self.caption_text = ""
+        self.caption_lock = asyncio.Lock()
         self.tasks = set()
         self.graph_lock = asyncio.Lock()
 
@@ -123,12 +129,30 @@ class VoiceAgent(Agent):
         session.on("speech_created", self.speech_created)
 
     def transcribed(self, event):
-        if event.is_final and event.transcript.strip():
+        text = event.transcript.strip()
+        if not text:
+            return
+        if self.caption_run is None:
+            self.caption_run = RunTelemetry(operation="voice", thread_id=self.thread_id, turn_id=uuid4().hex)
+        caption = f"{self.caption_text} {text}".strip()
+        if event.is_final:
+            self.caption_text = caption
             self.final_at = event.created_at
+        task = asyncio.create_task(self.user_caption(self.caption_run, caption, is_final=False))
+        self.tasks.add(task)
+        task.add_done_callback(self.tasks.discard)
+
+    async def user_caption(self, run, text, *, is_final):
+        async with self.caption_lock:
+            await publish_event(self.participant, self.identity, run, "transcript", {
+                "role": "user", "text": text, "is_final": is_final,
+            })
 
     async def on_user_turn_completed(self, turn_ctx, new_message):
         turn_id = new_message.id
-        run = RunTelemetry(operation="voice", thread_id=self.thread_id, turn_id=turn_id)
+        run = self.caption_run or RunTelemetry(operation="voice", thread_id=self.thread_id, turn_id=turn_id)
+        self.caption_run = None
+        self.caption_text = ""
         vad_end = new_message.metrics.get("stopped_speaking_at")
         if vad_end is not None:
             run.timestamps_ms["vad_end_ms"] = round(vad_end * 1000, 1)
@@ -161,7 +185,7 @@ class VoiceAgent(Agent):
             await publish_event(self.participant, self.identity, run, event, data)
 
         transcript = user.text_content
-        await send("transcript", {"role": "user", "text": transcript, "is_final": True})
+        await self.user_caption(run, transcript, is_final=True)
         async with self.graph_lock:
             return await answer_voice(self.graph, transcript, run, send)
 
@@ -192,8 +216,8 @@ class VoiceAgent(Agent):
 def make_session(vad):
     stt, tts = speech_models()
     return AgentSession(stt=stt, tts=tts, vad=vad, turn_handling={
-        "turn_detection": "vad", "endpointing": {"min_delay": 0.45},
-        "interruption": {"enabled": True, "mode": "vad", "min_duration": 0.15},
+        "turn_detection": "vad", "endpointing": {"min_delay": 1.1},
+        "interruption": {"enabled": True, "mode": "vad", "min_duration": 0.6},
         "preemptive_generation": {"enabled": False},
     })
 
@@ -202,7 +226,7 @@ def setup(proc):
     if sys.platform == "win32":
         # Psycopg needs a selector loop in the LiveKit job process.
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-    proc.userdata["vad"] = silero.VAD.load(min_silence_duration=0.45)
+    proc.userdata["vad"] = silero.VAD.load(min_silence_duration=0.95, min_speech_duration=0.15)
 
 
 load_dotenv()
@@ -222,7 +246,7 @@ async def entrypoint(ctx):
         resources.push_async_callback(agent.drain)
         resources.push_async_callback(session.aclose)
         await session.start(agent, room=ctx.room, room_options=room_io.RoomOptions(
-            participant_identity=caller.identity, text_input=False,
+            participant_identity=caller.identity, text_input=False, text_output=False,
         ))
         ctx.add_shutdown_callback(resources.pop_all().aclose)
 
