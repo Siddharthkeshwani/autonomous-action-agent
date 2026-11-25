@@ -78,9 +78,10 @@ function VoiceRoom({ onApproval }: { onApproval: (approval: Approval) => void })
   );
 }
 
-export default function VoicePanel({ apiUrl, onApproval }: {
+export default function VoicePanel({ apiUrl, onApproval, demoNote }: {
   apiUrl: string;
   onApproval: (approval: Approval) => void;
+  demoNote: string;
 }) {
   const [room, setRoom] = useState<Token | null>(null);
   const [status, setStatus] = useState<"idle" | "starting" | "connecting" | "connected">("idle");
@@ -124,6 +125,7 @@ export default function VoicePanel({ apiUrl, onApproval }: {
           : <button type="button" className="button button-primary" disabled={status === "starting"}
               onClick={start}>Start Voice</button>}
       </div>
+      <p className="mt-2 text-sm text-muted">{demoNote}</p>
       <p role="status" className="mt-3 text-sm text-muted">
         {status === "idle" && "Microphone off"}
         {status === "starting" && "Requesting a voice session"}

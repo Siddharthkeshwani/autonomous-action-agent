@@ -17,6 +17,25 @@ const latencyRows = [
 
 type Metrics = { latency: Record<string, { p50_ms: number | null }> };
 type Waiting = { approval: Approval; turnId: string; error?: string };
+type SpeechRecognition = {
+  continuous: boolean;
+  interimResults: boolean;
+  onresult: ((event: { results: ArrayLike<ArrayLike<{ transcript: string }>> }) => void) | null;
+  onerror: ((event: { error: string }) => void) | null;
+  onend: (() => void) | null;
+  start: () => void;
+  stop: () => void;
+  abort: () => void;
+};
+
+function speechRecognition() {
+  const browser = window as Window & {
+    SpeechRecognition?: new () => SpeechRecognition;
+    webkitSpeechRecognition?: new () => SpeechRecognition;
+  };
+  return browser.SpeechRecognition || browser.webkitSpeechRecognition;
+}
+
 type GatewayEvent =
   | { type: "step_status"; data: Step }
   | { type: "chart_artifact"; data: { image_base64: string; mime_type: string } }
@@ -92,12 +111,65 @@ function Latency({ metrics, error }: { metrics: Metrics | null; error: boolean }
 export default function Home() {
   const threadId = useRef<string | null>(null);
   const requestActive = useRef(false);
+  const recognition = useRef<SpeechRecognition | null>(null);
+  const [message, setMessage] = useState("");
+  const [canRecord, setCanRecord] = useState(false);
+  const [dictation, setDictation] = useState<"idle" | "recording" | "stopping">("idle");
+  const [dictationError, setDictationError] = useState("");
   const [turns, setTurns] = useState<Turn[]>([]);
   const [pending, setPending] = useState<Waiting[]>([]);
   const [busy, setBusy] = useState(false);
   const [health, setHealth] = useState<boolean | null>(null);
   const [metrics, setMetrics] = useState<Metrics | null>(null);
   const [metricsError, setMetricsError] = useState(false);
+
+  useEffect(() => {
+    setCanRecord(Boolean(speechRecognition()));
+    return () => {
+      const session = recognition.current;
+      recognition.current = null;
+      session?.abort();
+    };
+  }, []);
+
+  function toggleDictation() {
+    if (recognition.current) {
+      setDictation("stopping");
+      recognition.current.stop();
+      return;
+    }
+
+    const Recognition = speechRecognition();
+    if (!Recognition) return;
+    setDictationError("");
+    const prefix = message && !/\s$/.test(message) ? message + " " : message;
+    try {
+      const session = new Recognition();
+      session.continuous = true;
+      session.interimResults = true;
+      session.onresult = ({ results }) => {
+        if (recognition.current !== session) return;
+        const transcript = Array.from(results, (result) => result[0].transcript.trim()).filter(Boolean).join(" ");
+        setMessage(transcript ? prefix + transcript : message);
+      };
+      session.onerror = ({ error }) => {
+        if (recognition.current === session && error !== "no-speech") {
+          setDictationError("Dictation failed. Check microphone access and try again.");
+        }
+      };
+      session.onend = () => {
+        if (recognition.current !== session) return;
+        recognition.current = null;
+        setDictation("idle");
+      };
+      recognition.current = session;
+      session.start();
+      setDictation("recording");
+    } catch {
+      recognition.current = null;
+      setDictationError("Dictation could not start.");
+    }
+  }
 
   useEffect(() => {
     let active = true;
@@ -216,9 +288,19 @@ export default function Home() {
       </header>
       <main className="mx-auto grid min-h-[calc(100dvh-61px)] max-w-7xl items-start gap-5 px-5 py-6 sm:px-8 lg:grid-cols-[minmax(0,13fr)_minmax(0,7fr)]">
         <ChatPanel turns={turns} busy={busy} waiting={pending.some((item) => item.approval.thread_id === threadId.current)}
+          message={message} onMessageChange={setMessage} dictating={dictation !== "idle"} dictationError={dictationError}
+          recordControl={
+            <span className="inline-flex" title={canRecord ? undefined : "Dictation is unavailable in this browser."}>
+              <button type="button" className={canRecord ? "button" : "button pointer-events-none"}
+                disabled={!canRecord || dictation === "stopping"} onClick={toggleDictation}>
+                {dictation === "idle" ? "Record" : "Stop"}
+              </button>
+            </span>
+          }
           onSend={(message) => void run(crypto.randomUUID(), message)} />
         <div className="min-w-0 space-y-5">
-          <VoicePanel apiUrl={apiUrl} onApproval={voiceApproval} />
+          <VoicePanel apiUrl={apiUrl} onApproval={voiceApproval}
+            demoNote="Live WebRTC voice runs on-demand during demos. Use the Record button in Chat & Analytics for 24/7 voice input and charts." />
           {pending.map((waiting) => (
             <HilCard key={waiting.approval.interrupt_id} approval={waiting.approval} error={waiting.error} busy={busy}
               onDecision={(approved) => void run(waiting.turnId, "", { waiting, approved })} />

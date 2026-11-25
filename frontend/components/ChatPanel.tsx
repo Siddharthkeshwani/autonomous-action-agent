@@ -1,5 +1,4 @@
-import { useState } from "react";
-import type { FormEvent } from "react";
+import type { FormEvent, ReactNode } from "react";
 
 const examples = [
   ["Audio/UPI", "What is the dispute resolution timeline for a failed UPI payment?"],
@@ -42,19 +41,24 @@ function stepText(step: Step) {
   return name + " (" + step.status + ")";
 }
 
-export default function ChatPanel({ turns, busy, waiting, onSend }: {
+export default function ChatPanel({
+  turns, busy, waiting, message, onMessageChange, dictating, dictationError, recordControl, onSend,
+}: {
   turns: Turn[];
   busy: boolean;
   waiting: boolean;
+  message: string;
+  onMessageChange: (message: string) => void;
+  dictating: boolean;
+  dictationError: string;
+  recordControl: ReactNode;
   onSend: (message: string) => void;
 }) {
-  const [message, setMessage] = useState("");
-
   function send(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (busy || waiting || !message.trim()) return;
+    if (busy || waiting || dictating || !message.trim()) return;
     onSend(message.trim());
-    setMessage("");
+    onMessageChange("");
   }
 
   return (
@@ -122,10 +126,13 @@ export default function ChatPanel({ turns, busy, waiting, onSend }: {
         </div>
         <form onSubmit={send} className="flex gap-2">
           <label htmlFor="question" className="sr-only">Question</label>
-          <input id="question" value={message} onChange={(event) => setMessage(event.target.value)}
+          <input id="question" value={message} readOnly={dictating} onChange={(event) => onMessageChange(event.target.value)}
             placeholder="Ask a question..." className="min-w-0 flex-1 rounded-md border border-line px-3 py-2 text-sm" />
-          <button type="submit" className="button button-primary" disabled={busy || waiting || !message.trim()}>Send</button>
+          {recordControl}
+          <button type="submit" className="button button-primary"
+            disabled={busy || waiting || dictating || !message.trim()}>Send</button>
         </form>
+        {dictationError && <p role="alert" className="text-sm text-error">{dictationError}</p>}
       </div>
     </section>
   );
